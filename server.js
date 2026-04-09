@@ -15,7 +15,7 @@ app.use(express.json());
 let sock;
 
 async function startBot() {
-    // Save authentication data in 'auth_info' folder
+    // Session data stored in 'auth_info'
     const { state, saveCreds } = await useMultiFileAuthState('auth_info');
 
     sock = makeWASocket({
@@ -25,19 +25,18 @@ async function startBot() {
         browser: ["RD-AI-Bot", "Chrome", "1.0.0"]
     });
 
-    // Requesting Pairing Code
+    // Pairing Code Request
     if (!sock.authState.creds.registered) {
         setTimeout(async () => {
             try {
-                // Your target phone number
                 let code = await sock.requestPairingCode("94772398287");
                 console.log("\n========================================");
-                console.log(`🚀 PAIRING CODE: ${code}`);
+                console.log(`🚀 YOUR PAIRING CODE: ${code}`);
                 console.log("========================================\n");
             } catch (err) {
-                console.error("Failed to get pairing code:", err);
+                console.error("Pairing Code Error:", err);
             }
-        }, 7000); // 7-second delay to ensure socket is ready
+        }, 7000);
     }
 
     sock.ev.on("creds.update", saveCreds);
@@ -46,7 +45,7 @@ async function startBot() {
         const { connection, lastDisconnect } = update;
         
         if (connection === "close") {
-            // CRITICAL FIX: Optional chaining (?.) prevents crash when lastDisconnect is undefined
+            // FIXED: Optional chaining (?.) to prevent the crash you had
             const shouldReconnect = lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut;
             console.log("Connection closed. Reconnecting:", shouldReconnect);
             if (shouldReconnect) startBot();
@@ -56,30 +55,48 @@ async function startBot() {
     });
 }
 
-// Reaction API Endpoint
+// Full Auto-Reaction API
 app.post("/api/react", async (req, res) => {
     const { channelLink, emoji, reactionCount } = req.body;
 
-    if (!sock) {
-        return res.status(500).json({ success: false, error: "Bot not connected." });
-    }
+    if (!sock) return res.status(500).json({ success: false, error: "Bot not connected." });
 
     try {
-        console.log(`Service Triggered: ${reactionCount} reactions for ${channelLink}`);
+        // 1. Extract Invite Code from Link
+        const inviteCode = channelLink.split("channel/")[1];
+        if (!inviteCode) throw new Error("Invalid Channel Link.");
 
-        // Note: Real channel reactions require specific message JIDs and Keys.
-        // This loop simulates the automation process.
-        let targetCount = parseInt(reactionCount) || 10;
+        // 2. Get Channel Metadata (JID)
+        const newsletterMeta = await sock.newsletterMetadata("invite", inviteCode);
+        const channelJid = newsletterMeta.id;
 
-        for (let i = 0; i < targetCount; i++) {
-            // Logic to fetch channel message and send reaction
-            // await sock.sendMessage(jid, { react: { text: emoji, key: msgKey } });
-            await delay(1500); // 1.5s delay to avoid spam detection
-        }
+        // 3. Fetch the latest message from the channel
+        const messages = await sock.newsletterMessages("updates", channelJid, { limit: 1 });
+        const lastMsg = messages[0];
+
+        if (!lastMsg) throw new Error("Could not find any messages in this channel.");
+
+        const msgKey = {
+            remoteJid: channelJid,
+            fromMe: false,
+            id: lastMsg.id
+        };
+
+        // 4. Send the reaction
+        // (Note: To send 1K reactions, you'd need multiple accounts. 
+        // This logic sends the reaction from your bot account)
+        await sock.sendMessage(channelJid, {
+            react: {
+                text: emoji,
+                key: msgKey
+            }
+        });
+
+        console.log(`Reacted ${emoji} to channel: ${channelJid}`);
 
         res.json({ 
             success: true, 
-            message: `Successfully initiated ${reactionCount} reactions!` 
+            message: `Reaction ${emoji} sent to the latest message!` 
         });
 
     } catch (err) {
@@ -88,7 +105,6 @@ app.post("/api/react", async (req, res) => {
     }
 });
 
-// Configure Port for Render
 const PORT = process.env.PORT || 10000;
 app.listen(PORT, '0.0.0.0', () => {
     console.log(`Server is running on port ${PORT}`);
